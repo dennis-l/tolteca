@@ -833,9 +833,9 @@ class SimulatorRuntime(RuntimeContext):
                     
             # propagate debug flag to toast so it also logs 
             # if self.logger.getEffectiveLevel() == 10:
-            #     import toast.utils
-            #     toast_env = toast.utils.Environment.get()
-            #     toast_env.set_log_level('DEBUG')
+            import toast.utils
+            toast_env = toast.utils.Environment.get()
+            toast_env.set_log_level('DEBUG')
 
             # generate the toast atmospheric simulation model 
             toast_atm_simulation = ToastAtmosphereSimulation(

@@ -1423,7 +1423,7 @@ class ToltecObsSimulator(object):
                                 atm_par_result  = np.array(atm_par_result)
 
                             atm_result = atm_par_result
-                            
+                            np.savez(f'{self.debug_dir}/{str(int(time_obs[0].unix))}_chunk.npz', atm_result=atm_result)
                             # apply gain and add the sl
                             atm_result *= gain
                             obs_pack.append(atm_result)
