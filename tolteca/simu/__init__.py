@@ -732,6 +732,9 @@ class SimulatorRuntime(RuntimeContext):
         ### 
         ### toast atmosphere calculation
         ### 
+        debug_dir = self.rootpath.joinpath('debug')
+        debug_dir.mkdir(parents=True, exist_ok=True)
+        simobj.debug_dir = debug_dir
         if use_toast:
             from .toltec.atm import ToastAtmosphereSimulation
             self.logger.info("generating the atmosphere/simulation using toast")
@@ -753,8 +756,11 @@ class SimulatorRuntime(RuntimeContext):
                 evaluate_frame=AltAz,
             )
             
+            additional_padding = cfg['toast_array_padding']
+            self.logger.debug(f"padding used: {additional_padding}")
+
             # get the array padding default 1 * u.deg
-            array_size = 4 * u.arcmin
+            array_size = 4 * u.arcmin + additional_padding
             a = _atm_obs_coords.alt.radian
             m_rot_m3 = np.array([
                 [np.cos(a), -np.sin(a)],
@@ -769,12 +775,11 @@ class SimulatorRuntime(RuntimeContext):
             self.logger.info("calculated the boresight coordinates")
             # _atm_obs_coords should represent the boresight coordinates 
             # now obtain the bounding box and add padding extremes
-            additional_padding = cfg['toast_array_padding']
-            self.logger.debug(f"padding used: {additional_padding}")
+            
             
             # altitude/elevation
-            min_alt = np.min(alt) - additional_padding
-            max_alt = np.max(alt) + additional_padding
+            min_alt = np.min(alt) #- additional_padding
+            max_alt = np.max(alt) #+ additional_padding
 
             if min_alt < (0 * u.degree):
                 min_alt = 0. * u.degree
@@ -782,14 +787,86 @@ class SimulatorRuntime(RuntimeContext):
                 max_alt = 90. * u.degree
 
             # azimuth (revise this procedure to account for wrapping)
-            min_az = np.min(az) - additional_padding
-            max_az = np.max(az) + additional_padding
+            # print('mean:::::', np.mean(az).degree)
+            # print(az.ravel()[int(len(az.ravel().shape) / 2)].degree)
+        
+            # account for wrapping
+            az_360 = Angle(az).wrap_at(360.0 * u.deg)#.degree
+            az_360_min, az_360_max = np.min(az_360), np.max(az_360)
+
+            # import matplotlib.pyplot as plt
+            # azel_fig, azel_subplots = plt.subplots(1, 1, dpi=100, subplot_kw={'projection': 'polar'})
+            # azel_subplots.plot(az.to_value(u.radian), alt.to_value(u.radian), ',')
+            # azel_subplots.set_rmax(np.pi / 2)
+            # azel_subplots.set_rticks([])  # radial ticks
+            # azel_subplots.set_rlabel_position(-22.5)  # get radial labels away from plotted line
+            # azel_subplots.grid(True)
+            # azel_subplots.set_theta_zero_location("N")  # theta = 0 at the top
+            # #hwp_subfig.set_theta_direction(1)        # theta increasing clockwise
+            # angle = np.deg2rad(67.5)
+            # #azel_subplots.legend(fancybox=False, handletextpad=0.7, frameon=False, loc="lower left", bbox_to_anchor=(.5 + np.cos(angle)/2, .5 + np.sin(angle)/2))
+            # azel_subplots.plot(np.linspace(0,2 * np.pi, 100), min_alt.to_value(u.radian)* np.ones_like(np.linspace(0,2 * np.pi, 100)), '-', linewidth=1, color='red')
+            # azel_subplots.plot(np.linspace(0,2 * np.pi, 100), max_alt.to_value(u.radian)* np.ones_like(np.linspace(0,2 * np.pi, 100)), '-', linewidth=1, color='red')
+            # azel_subplots.plot(az_360_min.to_value(u.radian) * np.ones_like(np.linspace(0, np.pi/2, 5)), np.linspace(0, np.pi/2, 5), '--', linewidth=1, color='red')
+            # azel_subplots.plot(az_360_max.to_value(u.radian) * np.ones_like(np.linspace(0, np.pi/2, 5)), np.linspace(0, np.pi/2, 5), '--', linewidth=1, color='red')
+            # plt.show()
+            
+            # if less than 180 degrees
+            if (az_360_max - az_360_min) < (180 * u.degree):
+                # use .. these ranges and also use 0 --> 360
+                assert (az_360_min < np.median(az_360) < az_360_max)
+                # set the values
+                min_az = az_360_min
+                max_az = az_360_max
+                az_wrap_at = 360.0 << u.deg
+            else:
+                # otherwise, we should be using -180 --> 180
+                az_180_wrap = az_360.copy()
+                greater_than_180 = np.where(az_360 > (180 * u.degree))
+                az_180_wrap[greater_than_180] = az_180_wrap[greater_than_180] - (360 * u.degree)
+                az_180_wrap_min, az_180_wrap_max = np.min(az_180_wrap), np.max(az_180_wrap)
+                assert (az_180_wrap_min < np.median(az_180_wrap) < az_180_wrap_max)
+                # set the values
+                min_az = az_180_wrap_min
+                max_az = az_180_wrap_max
+                az_wrap_at = -180.0 << u.deg
+            
+
+            # exit()
+            # az_180 = Angle(az).wrap_at(180.0 * u.deg)#.degree
+            # # print('mean360:::::', np.mean(az_360).degree)
+            # # print('mean180:::::', np.mean(az_180).degree)
+            # az_360_min, az_360_max = np.min(az_360), np.max(az_360)
+            # az_180_min, az_180_max = np.min(az_180), np.max(az_180)
+
+            # self.logger.debug(f"{az_360_min=} // {az_360_max=}")
+            # self.logger.debug(f"{az_180_min=} // {az_180_max=}")
 
 
-            self.logger.debug(f'generated: min elevation: {min_alt}')
-            self.logger.debug(f'generated: max elevation: {max_alt}')
-            self.logger.debug(f'generated: min azimuth: {min_az}')
-            self.logger.debug(f'generated: max azimuth: {max_az}')
+            # # -180 <--> 180 if between -90 and 90
+            # # otherwise, 0-360
+            # #if az_180_min.degree < np.mean(az_360).degree < az_180_max.degree:
+            # if (az_180_max - az_180_min) < (az_360_max - az_360_min):
+            #     # use wrapping at 180.d
+            #     min_az = az_180_min 
+            #     max_az = az_180_max 
+            #     az_wrap_at = 180. << u.deg
+            # else:
+            # #elif az_360_min.degree < np.mean(az_360).degree < az_360_max.degree:
+            #     min_az = az_360_min 
+            #     max_az = az_360_max
+            #     az_wrap_at = 360. << u.deg
+            
+            # greater_than_180 = np.where(az_360 > (180 * u.degree))
+            # az_360[greater_than_180] = az_360[greater_than_180] - (360 * u.degree)
+            # min_az, max_az = np.min(az_360), np.max(az_360)
+            # # min_az = Angle(min_az).wrap_at(360.0 * u.deg)
+            # # max_az = Angle(max_az).wrap_at(360.0 * u.deg)
+
+            self.logger.debug(f'generated: {min_alt=}')
+            self.logger.debug(f'generated: {max_alt=}')
+            self.logger.debug(f'generated  {min_az=}')
+            self.logger.debug(f'generated: {max_az=}')
 
             # import matplotlib.pyplot as plt
             # plt.figure()
@@ -819,9 +896,7 @@ class SimulatorRuntime(RuntimeContext):
             # azel_subplots.plot(max_az.to_value(u.radian) * np.ones_like(np.linspace(0, np.pi/2, 5)), np.linspace(0, np.pi/2, 5), '--', linewidth=1, color='red')
             # plt.show()
 
-            # debug_dir = self.rootpath.joinpath('debug_folder')
-            # debug_dir.mkdir(parents=True, exist_ok=True)
-            # simobj.debug_dir = debug_dir
+            
             # np.savez(f'{debug_dir}/boresight.npz', alt=alt.to_value(u.degree), az=az.to_value(u.degree))
         
             # create the toast cache directory to cache files 
@@ -844,6 +919,7 @@ class SimulatorRuntime(RuntimeContext):
                     min_az, max_az, min_alt, max_alt,
                     cachedir=toast_atm_cache_dir
                 )
+            toast_atm_simulation.az_wrap_at = az_wrap_at
 
             toast_atm_simulation.generate_simulation()  
 

@@ -12,7 +12,7 @@ from astropy import coordinates as coord
 from astropy.time import Time
 from astropy.table import Column, QTable, Table
 from astropy.wcs.utils import celestial_frame_to_wcs
-from astropy.coordinates import SkyCoord, AltAz
+from astropy.coordinates import SkyCoord, AltAz, Angle
 from astropy.coordinates.erfa_astrom import (
         erfa_astrom, ErfaAstromInterpolator)
 from astropy.cosmology import default_cosmology
@@ -1364,16 +1364,80 @@ class ToltecObsSimulator(object):
                         + m_rot_m3[1, 1][:, np.newaxis] * y_t[np.newaxis, :]
                     lon, lat = m_proj_icrs(
                         x, y, eval_interp_len=0.1 << u.s)
-                    az, alt = m_proj_native(x, y, eval_interp_len=0.1 << u.s)     
+                    az, alt = m_proj_native(x, y, eval_interp_len=0.1 << u.s)    
+
+            
+                import matplotlib.pyplot as plt
+                azel_fig, azel_subplots = plt.subplots(1, 1, dpi=100, subplot_kw={'projection': 'polar'})
+                azel_subplots.plot(az.to_value(u.radian).ravel(), alt.to_value(u.radian).ravel(), 'x')
+                azel_subplots.set_rmax(np.pi / 2)
+                azel_subplots.set_rticks([])  # radial ticks
+                azel_subplots.set_rlabel_position(-22.5)  # get radial labels away from plotted line
+                azel_subplots.grid(True)
+                azel_subplots.set_theta_zero_location("N")  # theta = 0 at the top
+                #hwp_subfig.set_theta_direction(1)        # theta increasing clockwise
+                angle = np.deg2rad(67.5)
+                #azel_subplots.legend(fancybox=False, handletextpad=0.7, frameon=False, loc="lower left", bbox_to_anchor=(.5 + np.cos(angle)/2, .5 + np.sin(angle)/2))
+                #azel_subplots.plot(np.linspace(0,2 * np.pi, 100), self.atm_simulation.elmin.to_value(u.radian)* np.ones_like(np.linspace(0,2 * np.pi, 100)), '-', linewidth=1, color='red')
+                #azel_subplots.plot(np.linspace(0,2 * np.pi, 100), self.atm_simulation.elmax.to_value(u.radian)* np.ones_like(np.linspace(0,2 * np.pi, 100)), '-', linewidth=1, color='red')
+                #azel_subplots.plot(self.atm_simulation.azmin.to_value(u.radian) * np.ones_like(np.linspace(0, np.pi/2, 5)), np.linspace(0, np.pi/2, 5), '--', linewidth=1, color='red')
+                #azel_subplots.plot(self.atm_simulation.azmax.to_value(u.radian) * np.ones_like(np.linspace(0, np.pi/2, 5)), np.linspace(0, np.pi/2, 5), '--', linewidth=1, color='red')
+                plt.savefig(f'{self.debug_dir}/extent_{str(int(time_obs[0].unix))}')
+
+
+                az_atm = Angle(az).wrap_at(360.0 * u.deg)
+                greater_than_180 = np.where(az_atm > (180 * u.degree))
+                az_atm[greater_than_180] = az_atm[greater_than_180] - (360 * u.degree)
+                #for i in range(len(az.T)):
+                if 1 == 1:
+                    i = 1
+                    idx = i
+                    
+                    plots_, subplots_ = plt.subplots(5,1, figsize=(10,10), dpi=180)
+                    for ax in subplots_:
+                        ax.tick_params(axis="x", direction="in")
+                        ax.tick_params(axis="y", direction="in")
+                    subplots_[0].plot(az.to_value(u.degree)[:,idx], ',', color='xkcd:black')
+                    subplots_[0].set_ylabel('azimuth (deg) (360)')
+                    subplots_[1].plot(az_atm.to_value(u.degree)[:,idx], ',', color='xkcd:black')
+                    subplots_[1].set_ylabel('azimuth (deg)')
+                    subplots_[2].plot(alt.to_value(u.degree)[:,idx], ',', color='xkcd:black')
+                    subplots_[2].set_ylabel('altitude/elevation (deg)')
+                    subplots_[3].plot(lon.to_value(u.degree)[:,idx], ',', color='xkcd:black')
+                    subplots_[3].set_ylabel('lon (deg)')
+                    subplots_[4].plot(lat.to_value(u.degree)[:,idx], ',', color='xkcd:black')
+                    subplots_[4].set_ylabel('lat (deg)')
+                
+                    
+                    subplots_[1].set_xlabel('time')
+                    plt.savefig(f'{self.debug_dir}/detector_{int(idx)}_{str(int(time_obs[0].unix))}_extent')
+                    plt.close('all')
+
                 if self.atm_simulation is not None:
+                    # convert to all positive 360 degree warap
+                    az_atm = Angle(az).wrap_at(360.0 * u.deg)
+
+                    # determine if the slabs were generated with -180 to 180 or 0 to 360
+                    if self.atm_simulation.az_wrap_at == (-180.0 << u.deg):
+                        greater_than_180 = np.where(az_atm > (180 * u.degree))
+                        az_atm[greater_than_180] = az_atm[greater_than_180] - (360 * u.degree)
+                    elif self.atm_simulation.az_wrap_at == (360.0 << u.deg):
+                        pass
+                    else:
+                        raise RuntimeError(f'az_wrap_at ({self.atm_simulation.az_wrap_at}) not set correctly')
+                    
+                    
+
                     logger.debug(f'simulated min azimuth: {self.atm_simulation.azmin}')
-                    logger.debug(f'observing min azimuth: {np.min(az)}')
+                    logger.debug(f'observing min azimuth: {np.min(az_atm)}')
+                    logger.debug(f'observing max azimuth: {np.max(az_atm)}')
                     logger.debug(f'simulated max azimuth: {self.atm_simulation.azmax}')
-                    logger.debug(f'observing max azimuth: {np.max(az)}')
+                    
                     logger.debug(f'simulated min elevation: {self.atm_simulation.elmin}')
                     logger.debug(f'observing min elevation: {np.min(alt)}')
-                    logger.debug(f'simulated max elevation: {self.atm_simulation.elmax}')
                     logger.debug(f'observing max elevation: {np.max(alt)}')
+                    logger.debug(f'simulated max elevation: {self.atm_simulation.elmax}')
+                    
 
                     #np.savez(f'{self.debug_dir}/{str(int(time_obs[0].unix))}_chunk.npz', alt=alt.to_value(u.degree), az=az.to_value(u.degree))
 
@@ -1390,7 +1454,7 @@ class ToltecObsSimulator(object):
                         for slab_id, atm_slab in self.atm_simulation.atm_slabs.items():
 
                             detector_info = []
-                            for az_single, alt_single, info_single in zip(az.T, alt.T, self.table):
+                            for az_single, alt_single, info_single in zip(az_atm.T, alt.T, self.table):
                                 package_ = {
                                     'atm_times': atm_times, 
                                     'az_single': az_single, 
@@ -1423,7 +1487,7 @@ class ToltecObsSimulator(object):
                                 atm_par_result  = np.array(atm_par_result)
 
                             atm_result = atm_par_result
-                            np.savez(f'{self.debug_dir}/{str(int(time_obs[0].unix))}_chunk.npz', atm_result=atm_result)
+                            np.savez(f'{self.debug_dir}/chunk_{str(int(time_obs[0].unix))}.npz', atm_result=atm_result)
                             # apply gain and add the sl
                             atm_result *= gain
                             obs_pack.append(atm_result)
