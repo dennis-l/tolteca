@@ -528,7 +528,8 @@ class ToltecObsSimulator(object):
                     f"dec: {det_sky_bbox_icrs.s!s} - {det_sky_bbox_icrs.n!s}\n"
                     f"az: {det_sky_bbox_altaz.w!s} - {det_sky_bbox_altaz.e!s}\n"
                     f"alt: {det_sky_bbox_altaz.s!s} - {det_sky_bbox_altaz.n!s}\n"
-                    f"size: {det_sky_bbox_icrs.width}, {det_sky_bbox_icrs.height}"
+                    f"size: {det_sky_bbox_icrs.width}, {det_sky_bbox_icrs.height}\n"
+                    f"size (altaz): {det_sky_bbox_altaz.width}, {det_sky_bbox_altaz.height}\n"
                     )
 
                 # import matplotlib.pyplot as plt
@@ -690,6 +691,17 @@ class ToltecObsSimulator(object):
             # also we setup the toast slabs if atm_model_name is set to
             # toast
             if power_loading_model.atm_model_name == 'toast':
+                # test out evaluation model
+                from .atm import ToastAtmosphereSimulation
+                t_grid_eval_time = mapping_model.t0 + t_grid_pre_eval
+                toast_atm_simulation = ToastAtmosphereSimulation(
+                    t_grid_pre_eval_time[0],
+                    t_grid_pre_eval_time[0].unix, t_grid_pre_eval_time[-1].unix, 
+                    # min_az, max_az, min_alt, max_alt
+                    det_sky_bbox_altaz.w, det_sky_bbox_altaz.e, det_sky_bbox_altaz.s, det_sky_bbox_altaz.n,
+                    cachedir=None # turn this off for now
+                )
+                toast_atm_simulation.generate_simulation()
                 es.enter_context(
                     power_loading_model.toast_atm_eval_context(
                         sky_bbox_altaz=det_sky_bbox_altaz
