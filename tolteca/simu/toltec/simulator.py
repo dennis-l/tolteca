@@ -693,7 +693,7 @@ class ToltecObsSimulator(object):
             if power_loading_model.atm_model_name == 'toast':
                 # test out evaluation model
                 from .atm import ToastAtmosphereSimulation
-                t_grid_eval_time = mapping_model.t0 + t_grid_pre_eval
+                t_grid_pre_eval_time = mapping_model.t0 + t_grid_pre_eval
                 toast_atm_simulation = ToastAtmosphereSimulation(
                     t_grid_pre_eval_time[0],
                     t_grid_pre_eval_time[0].unix, t_grid_pre_eval_time[-1].unix, 
