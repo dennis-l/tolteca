@@ -1146,7 +1146,7 @@ class ToltecPowerLoadingModel(PowerLoadingModel):
     
     def toast_atm_eval_context(pre_eval_time, sky_bbox_altaz):
         from .atm import ToastAtmosphereSimulation
-         toast_atm_simulation = ToastAtmosphereSimulation(
+        toast_atm_simulation = ToastAtmosphereSimulation(
             t_grid_pre_eval_time[0],
             t_grid_pre_eval_time[0].unix, t_grid_pre_eval_time[-1].unix, 
             # min_az, max_az, min_alt, max_alt
