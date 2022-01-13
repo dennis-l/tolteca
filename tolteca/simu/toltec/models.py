@@ -1150,7 +1150,7 @@ class ToltecPowerLoadingModel(PowerLoadingModel):
             pre_eval_time[0],
             pre_eval_time[0].unix, pre_eval_time[-1].unix, 
             # min_az, max_az, min_alt, max_alt
-            det_sky_bbox_altaz.w, det_sky_bbox_altaz.e, det_sky_bbox_altaz.s, det_sky_bbox_altaz.n,
+            sky_bbox_altaz.w, sky_bbox_altaz.e, sky_bbox_altaz.s, sky_bbox_altaz.n,
             cachedir=None # turn this off for now
         )
         toast_atm_simulation.generate_simulation()
