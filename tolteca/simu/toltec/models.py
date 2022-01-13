@@ -1145,6 +1145,7 @@ class ToltecPowerLoadingModel(PowerLoadingModel):
             f'{self.__class__.__name__}(atm_model_name={self.atm_model_name})')
     
     def toast_atm_eval_context(self, pre_eval_time, sky_bbox_altaz):
+        es = ExitStack()
         from .atm import ToastAtmosphereSimulation
         toast_atm_simulation = ToastAtmosphereSimulation(
             pre_eval_time[0],
@@ -1154,6 +1155,7 @@ class ToltecPowerLoadingModel(PowerLoadingModel):
             cachedir=None # turn this off for now
         )
         toast_atm_simulation.generate_simulation()
+        return es
         
 
 
