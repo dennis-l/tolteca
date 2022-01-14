@@ -1014,7 +1014,6 @@ class ToltecArrayPowerLoadingModel(Model):
             return_realized_noise=True,
             ):
         """Return the array power loading along with the noise."""
-
         if self._p_pW_interp is None:
             # no interp, direct eval
             alt = np.ravel(det_alt)
@@ -1090,14 +1089,21 @@ class ToltecPowerLoadingModel(PowerLoadingModel):
             es.enter_context(m.eval_interp_context(alt_grid))
         return es
 
-    def get_P(self, det_array_name, det_alt):
+    def get_P(self, det_array_name, det_alt, det_az, time_obs):
         """Evaluate the power loading model only and without noise."""
         p_out = np.zeros(det_alt.shape) << u.pW
         for array_name in self.array_names:
             mask = (det_array_name == array_name)
             aplm = self._array_power_loading_models[array_name]
             if self.atm_model_name == 'toast':
-                p = calc_toast_atm_pwr(det_alt[mask])
+                p = calc_toast_atm_pwr(
+                    array_name=array_name,
+                    time_obs_unix=time_obs.unix[mask], 
+                    det_alt=det_alt[mask], 
+                    det_az=det_az[mask],
+                    toast_simu=self.toast_atm_simulation
+                )
+
             else:
                 # use the ToltecArrayPowerLoadingModel
                 p, _ = aplm.evaluate_tod(
@@ -1127,7 +1133,7 @@ class ToltecPowerLoadingModel(PowerLoadingModel):
                 # atm is disabled
                 pass
             elif self.atm_model_name == 'toast':
-                p = calc_toast_atm_pwr(det_alt=det_alt[mask])
+                p = calc_toast_atm_pwr(time_obs=None, det_alt=det_alt[mask], det_az=det_az[mask])
                 p_out[mask] += p
             else:
                 # use the ToltecArrayPowerLoadingModel atm
@@ -1144,22 +1150,70 @@ class ToltecPowerLoadingModel(PowerLoadingModel):
         return (
             f'{self.__class__.__name__}(atm_model_name={self.atm_model_name})')
     
-    def toast_atm_eval_context(self, pre_eval_time, sky_bbox_altaz):
+    def toast_atm_eval_context(self, pre_eval_time, sky_bbox_altaz, cachedir=None):
         es = ExitStack()
         from .atm import ToastAtmosphereSimulation
-        toast_atm_simulation = ToastAtmosphereSimulation(
+
+        import toast.utils
+        toast_env = toast.utils.Environment.get()
+        toast_env.set_log_level('DEBUG')
+        
+        self.toast_atm_simulation = ToastAtmosphereSimulation(
             pre_eval_time[0],
             pre_eval_time[0].unix, pre_eval_time[-1].unix, 
             # min_az, max_az, min_alt, max_alt
             sky_bbox_altaz.w, sky_bbox_altaz.e, sky_bbox_altaz.s, sky_bbox_altaz.n,
-            cachedir=None # turn this off for now
+            cachedir=cachedir # turn this off for now
         )
-        toast_atm_simulation.generate_simulation()
+        self.toast_atm_simulation.generate_simulation()
         return es
         
 
 
-def calc_toast_atm_pwr(det_alt):
-    # TODO
-    # implement this
-    raise NotImplementedError("toast atm is not implemented yet")
+def calc_toast_atm_pwr(array_name, time_obs_unix, det_alt, det_az, toast_simu):
+    logger = get_logger()
+
+    atm_pW_additive = list()
+
+    # iterate through all generated slabs
+    for slab_id, atm_slab in toast_simu.atm_slabs.items():
+        logger.debug(f"integrating {array_name=} detectors ({det_az.size}) on {slab_id=}")
+
+        # returns atmospheric brightness temperature (Kelvin)
+        atmtod = np.zeros_like(time_obs_unix)
+        # print(atmtod.size, det_az.to(u.radian).value.size, det_alt.to(u.radian).value.size, time_obs_unix.size)
+        # print(det_az, det_alt)
+        err = atm_slab.observe(
+            times=time_obs_unix,
+            az=det_az.to_value(u.radian),
+            el=det_alt.to_value(u.radian),
+            tod=atmtod,
+            fixed_r=0,
+        )
+        if err != 0:
+            logger.error(f"toast slab observation failed {err=}")
+            raise RuntimeError("toast slab observation failed")
+        logger.info('toast slab observation observation success')
+
+        absorption_det = toast_simu.absorption[array_name]
+        loading_det    = toast_simu.loading[array_name]
+        atm_gain       = 1e-3  # this value is used to bring down the bandpass 
+    
+        # calibrate the atmopsheric fluctuations to appropriate bandpass
+        atmtod *= atm_gain * absorption_det 
+
+        # add the elevation-dependent atmospheric loading
+        atmtod += loading_det / np.sin(det_alt.to_value(u.radian))
+
+        atmtod *= 5e-2 # bring it down again
+
+        # convert from antenna temperature (Kelvin) to MJy/sr
+        # conversion_equiv = u.brightness_temperature(info_single['wl_center'])
+        # result = (atmtod * u.Kelvin).to_value(u.MJy / u.sr, equivalencies=conversion_equiv),
+        
+        # convert from antenna temperature (Kelvin) to u.pW
+        pb_width = toltec_info[array_name]['passband']
+        result = ((atmtod * u.Kelvin).to(u.J, equivalencies=u.temperature_energy())* pb_width).to(u.pW)
+        atm_pW_additive.append(result)
+    
+    return np.sum(atm_pW_additive, axis=0) << u.pW

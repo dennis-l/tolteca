@@ -102,6 +102,7 @@ class ToastAtmosphereSimulation(object):
 
     @timeit
     def _bandpass_calculations(self):
+        # TODO: make this faster
         
         self.absorption = dict()
         self.loading = dict()
@@ -191,7 +192,7 @@ class ToastAtmosphereSimulation(object):
                 key2=key2,
                 counterval1=counter1,
                 counterval2=counter2,
-                cachedir=self.cachedir, # TODO: add a cachedir in the working folder
+                cachedir=self.cachedir,
                 rmin=rmin,
                 rmax=rmax,
                 node_comm=None,

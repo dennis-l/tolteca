@@ -542,6 +542,13 @@ class ToltecObsSimulator(object):
                 #             marker=(2, 0, det_pa_icrs.degree[i, j]),
                 #             markersize=5, linestyle=None)
                 # plt.show()
+
+                # raise RuntimeError('Dennis Here')
+                #print(f"{eval_interp_len=} {n_times=}")
+                # print(len(time_obs))
+                # print(det_sky_traj['az'].shape, det_sky_traj['alt'].shape)                
+                
+
                 if mapping_only:
                     return locals()
                 # get source flux from models
@@ -688,16 +695,25 @@ class ToltecObsSimulator(object):
             es.enter_context(
                 power_loading_model.aplm_eval_interp_context(
                     alt_grid=interp_alt_grid))
+            t_grid_pre_eval_time = mapping_model.t0 + t_grid_pre_eval
             # also we setup the toast slabs if atm_model_name is set to
             # toast
             if power_loading_model.atm_model_name == 'toast':
-                t_grid_pre_eval_time = mapping_model.t0 + t_grid_pre_eval
+
+                # create cachedir
+                rootpath = simu_config.runtime_info.config_info.runtime_context_dir
+                toast_atm_cache_dir = rootpath.joinpath('toast_atm')
+                if not toast_atm_cache_dir.exists():
+                    toast_atm_cache_dir.mkdir(parents=True, exist_ok=True)
+
                 es.enter_context(
                     power_loading_model.toast_atm_eval_context(
                         pre_eval_time=t_grid_pre_eval_time,
-                        sky_bbox_altaz=det_sky_bbox_altaz
+                        sky_bbox_altaz=det_sky_bbox_altaz,
+                        cachedir=toast_atm_cache_dir
                         )
                     )
+        
         # figure out the tune power  and flxscale
         # we use the closest point on the boresight to the target
         # for the tune obs
@@ -706,15 +722,20 @@ class ToltecObsSimulator(object):
         i_closest = np.argmin(
             target_icrs.separation(bs_coords_icrs))
         det_alt_tune = det_sky_traj['alt'][:, i_closest]
+        det_az_tune  =  det_sky_traj['az'][:, i_closest].wrap_at(det_sky_bbox_altaz.lon_wrap_angle)
         self.logger.debug(f"use tune at detector alt={det_alt_tune.mean()}")
         if power_loading_model is None:
             # when power loading model is not set, we use the apt default
             kids_p_tune = apt['background']
         else:
+            eval_time = t_grid_pre_eval_time[i_closest] + (np.full(len(det_array_name), 0) << u.s)
             kids_p_tune = power_loading_model.get_P(
                 det_array_name=det_array_name,
                 det_alt=Angle(np.full(
-                    len(det_array_name), det_alt_tune.degree) << u.deg)
+                    len(det_array_name), det_alt_tune.degree) << u.deg),
+                det_az=Angle(np.full(
+                    len(det_array_name), det_az_tune.degree) << u.deg),
+                time_obs=eval_time
                 )
         for array_name in self.array_names:
             m = (det_array_name == array_name)
