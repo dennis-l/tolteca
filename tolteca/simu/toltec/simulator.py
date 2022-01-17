@@ -406,7 +406,10 @@ class ToltecObsSimulator(object):
                 det_s=det_s,
                 )
 
-        def evaluate(det_s=None, det_sky_traj=None):
+        def evaluate(det_s=None, det_sky_traj=None, t=None, mapping_info=None):
+            t0 = mapping_info['t0']
+            time_obs = t0 + t
+            self.logger.info(f'{time_obs[0]} to {time_obs[-1]}')
             # make sure we have at least some input for eval
             if det_s is None and det_sky_traj is None:
                 raise ValueError("one of det_s and det_sky_traj is required")
@@ -442,6 +445,8 @@ class ToltecObsSimulator(object):
                         det_array_name=det_array_name,
                         det_s=det_s,
                         det_alt=det_sky_traj['alt'],
+                        det_az=det_sky_traj['az'],
+                        time_obs=time_obs,
                         f_smp=f_smp,
                         noise_seed=None,
                         )
@@ -806,7 +811,7 @@ class ToltecObsSimulator(object):
             det_s, mapping_info = mapping_evaluator(t)
             det_sky_traj = mapping_info['det_sky_traj']
             det_pwr, probing_info = probing_evaluator(
-                det_s=det_s, det_sky_traj=det_sky_traj)
+                det_s=det_s, det_sky_traj=det_sky_traj, t=t, mapping_info=mapping_info)
             return locals()
 
         self._eval_context = locals()

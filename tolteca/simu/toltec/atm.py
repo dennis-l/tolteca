@@ -39,6 +39,8 @@ class ToastAtmosphereSimulation(object):
 
         self.site_height = u.Quantity(lmt_info['location']['height'])
 
+        self.logger = get_logger()
+
 
     @timeit
     def generate_simulation(self):
@@ -157,6 +159,10 @@ class ToastAtmosphereSimulation(object):
         self.wy          = self.sim_weather.south_wind
         w_center    = np.sqrt(self.wx ** 2 + self.wy ** 2)
         wdir_center = np.arctan2(self.wy, self.wx)
+
+        self.logger.debug(f'initial seed: {key1=} {key2=} {counter1=} {counter2=}')
+        self.logger.debug(f'weather params (1): {self.sim_weather.air_temperature=} {self.sim_weather.south_wind=} {self.sim_weather.west_wind=}')
+        self.logger.debug(f'weather params (2): {w_center=} {wdir_center=}')
 
         # dict of atmosphere slabs
         atm_slabs = dict()

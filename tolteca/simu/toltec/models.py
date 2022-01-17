@@ -1121,7 +1121,7 @@ class ToltecPowerLoadingModel(PowerLoadingModel):
         return p_out
 
     def evaluate_tod(
-            self, det_array_name, det_s, det_alt,
+            self, det_array_name, det_s, det_alt, det_az, time_obs,
             f_smp,
             noise_seed=None,
             ):
@@ -1133,7 +1133,13 @@ class ToltecPowerLoadingModel(PowerLoadingModel):
                 # atm is disabled
                 pass
             elif self.atm_model_name == 'toast':
-                p = calc_toast_atm_pwr(time_obs=None, det_alt=det_alt[mask], det_az=det_az[mask])
+                p = calc_toast_atm_pwr(
+                    array_name=array_name,
+                    time_obs_unix=time_obs.unix, 
+                    det_alt=det_alt[mask], 
+                    det_az=det_az[mask],
+                    toast_simu=self.toast_atm_simulation
+                )
                 p_out[mask] += p
             else:
                 # use the ToltecArrayPowerLoadingModel atm
@@ -1174,46 +1180,76 @@ def calc_toast_atm_pwr(array_name, time_obs_unix, det_alt, det_az, toast_simu):
     logger = get_logger()
 
     atm_pW_additive = list()
+    logger.critical(f'{array_name=}')
+    logger.critical(f'{time_obs_unix.shape=} {det_alt.shape=} {det_az.shape=}')
+    logger.critical(f'{time_obs_unix.shape=} {len(det_alt.shape)=} {len(det_az.shape)=}')
+    original_shape = None
+    if (len(det_alt.shape) == len(det_az.shape)) and (len(det_alt.shape) == 2):
+        original_shape = det_alt.shape
+        
+        det_alt_observe = det_alt.ravel()
+        det_az_observe  = det_az.ravel()
+        time_obs_unix_observe = np.tile(time_obs_unix, original_shape[0]) # timelen * no of detectors
+        
+        logger.error(f'{array_name=}')
+        logger.error(f'{time_obs_unix_observe.shape=} {det_alt_observe.shape=} {det_az_observe.shape=}')
+        logger.error(f'{len(time_obs_unix_observe.shape)=} {len(det_alt_observe.shape)=} {len(det_az_observe.shape)=}')
+    else:
+        det_az_observe  = det_az
+        det_alt_observe = det_alt
+        time_obs_unix_observe = time_obs_unix
 
     # iterate through all generated slabs
     for slab_id, atm_slab in toast_simu.atm_slabs.items():
-        logger.debug(f"integrating {array_name=} detectors ({det_az.size}) on {slab_id=}")
+        #logger.debug(f"integrating {array_name=} detectors ({det_az.size}) on {slab_id=}")
 
         # returns atmospheric brightness temperature (Kelvin)
-        atmtod = np.zeros_like(time_obs_unix)
+        atmtod = np.zeros_like(time_obs_unix_observe)
         # print(atmtod.size, det_az.to(u.radian).value.size, det_alt.to(u.radian).value.size, time_obs_unix.size)
         # print(det_az, det_alt)
         err = atm_slab.observe(
-            times=time_obs_unix,
-            az=det_az.to_value(u.radian),
-            el=det_alt.to_value(u.radian),
+            times=time_obs_unix_observe,
+            az=det_az_observe.to_value(u.radian),
+            el=det_alt_observe.to_value(u.radian),
             tod=atmtod,
             fixed_r=0,
         )
         if err != 0:
             logger.error(f"toast slab observation failed {err=}")
             raise RuntimeError("toast slab observation failed")
-        logger.info('toast slab observation observation success')
+        logger.debug('toast slab observation observation success')
 
         absorption_det = toast_simu.absorption[array_name]
         loading_det    = toast_simu.loading[array_name]
-        atm_gain       = 1e-3  # this value is used to bring down the bandpass 
+        atm_gain       = 1e-3  # this value is used to bring down the bandpass
     
         # calibrate the atmopsheric fluctuations to appropriate bandpass
         atmtod *= atm_gain * absorption_det 
 
-        # add the elevation-dependent atmospheric loading
-        atmtod += loading_det / np.sin(det_alt.to_value(u.radian))
+        # add the elevation-dependent atmospheric loading component
+        atmtod += loading_det / np.sin(det_alt_observe.to_value(u.radian))
 
         atmtod *= 5e-2 # bring it down again
 
         # convert from antenna temperature (Kelvin) to MJy/sr
         # conversion_equiv = u.brightness_temperature(info_single['wl_center'])
-        # result = (atmtod * u.Kelvin).to_value(u.MJy / u.sr, equivalencies=conversion_equiv),
+        # atm_Mjy_sr = (atmtod * u.Kelvin).to_value(u.MJy / u.sr, equivalencies=conversion_equiv),
         
-        # convert from antenna temperature (Kelvin) to u.pW
+        # convert from antenna temperature (Kelvin) to pW
         pb_width = toltec_info[array_name]['passband']
-        result = ((atmtod * u.Kelvin).to(u.J, equivalencies=u.temperature_energy())* pb_width).to(u.pW)
-        atm_pW_additive.append(result)
+        atm_pW = ((atmtod * u.Kelvin).to(u.J, equivalencies=u.temperature_energy())* pb_width).to(u.pW)
+        atm_pW_additive.append(atm_pW)
     
-    return np.sum(atm_pW_additive, axis=0) << u.pW
+    result = np.sum(atm_pW_additive, axis=0) << u.pW
+    logger.info(f'{array_name=}')
+    logger.info(f'{time_obs_unix.shape=} {det_alt.shape=} {det_az.shape=} {result.shape=}')
+    logger.info(f'{time_obs_unix.shape=} {len(det_alt.shape)=} {len(det_az.shape)=} {len(result.shape)=}')
+    if original_shape:
+        result = result.reshape(original_shape)
+    assert result.shape == det_alt.shape
+    logger.info(f'{array_name=}')
+    logger.info(f'{time_obs_unix.shape=} {det_alt.shape=} {det_az.shape=} {result.shape=}')
+    logger.info(f'{time_obs_unix.shape=} {len(det_alt.shape)=} {len(det_az.shape)=} {len(result.shape)=}')
+    if original_shape:
+        pass
+    return result
