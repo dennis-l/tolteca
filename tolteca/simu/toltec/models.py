@@ -1169,7 +1169,7 @@ class ToltecPowerLoadingModel(PowerLoadingModel):
             pre_eval_time[0].unix, pre_eval_time[-1].unix, 
             # min_az, max_az, min_alt, max_alt
             sky_bbox_altaz.w, sky_bbox_altaz.e, sky_bbox_altaz.s, sky_bbox_altaz.n,
-            cachedir=cachedir # turn this off for now
+            cachedir=cachedir
         )
         self.toast_atm_simulation.generate_simulation()
         return es
@@ -1180,20 +1180,16 @@ def calc_toast_atm_pwr(array_name, time_obs_unix, det_alt, det_az, toast_simu):
     logger = get_logger()
 
     atm_pW_additive = list()
-    logger.critical(f'{array_name=}')
-    logger.critical(f'{time_obs_unix.shape=} {det_alt.shape=} {det_az.shape=}')
-    logger.critical(f'{time_obs_unix.shape=} {len(det_alt.shape)=} {len(det_az.shape)=}')
+    
+    # ravels the 2D array into one 1D array as opposed 
+    # to iterating over all detectors
+    # this is now directly impacted by the chunk size
     original_shape = None
     if (len(det_alt.shape) == len(det_az.shape)) and (len(det_alt.shape) == 2):
         original_shape = det_alt.shape
-        
         det_alt_observe = det_alt.ravel()
         det_az_observe  = det_az.ravel()
-        time_obs_unix_observe = np.tile(time_obs_unix, original_shape[0]) # timelen * no of detectors
-        
-        logger.error(f'{array_name=}')
-        logger.error(f'{time_obs_unix_observe.shape=} {det_alt_observe.shape=} {det_az_observe.shape=}')
-        logger.error(f'{len(time_obs_unix_observe.shape)=} {len(det_alt_observe.shape)=} {len(det_az_observe.shape)=}')
+        time_obs_unix_observe = np.tile(time_obs_unix, original_shape[0]) # time steps * no of detectors
     else:
         det_az_observe  = det_az
         det_alt_observe = det_alt
@@ -1201,7 +1197,7 @@ def calc_toast_atm_pwr(array_name, time_obs_unix, det_alt, det_az, toast_simu):
 
     # iterate through all generated slabs
     for slab_id, atm_slab in toast_simu.atm_slabs.items():
-        #logger.debug(f"integrating {array_name=} detectors ({det_az.size}) on {slab_id=}")
+        logger.debug(f"integrating {array_name=} ({det_az_observe.size} discrete steps) on {slab_id=}")
 
         # returns atmospheric brightness temperature (Kelvin)
         atmtod = np.zeros_like(time_obs_unix_observe)
@@ -1240,16 +1236,11 @@ def calc_toast_atm_pwr(array_name, time_obs_unix, det_alt, det_az, toast_simu):
         atm_pW = ((atmtod * u.Kelvin).to(u.J, equivalencies=u.temperature_energy())* pb_width).to(u.pW)
         atm_pW_additive.append(atm_pW)
     
+    # sum over all slabs
     result = np.sum(atm_pW_additive, axis=0) << u.pW
-    logger.info(f'{array_name=}')
-    logger.info(f'{time_obs_unix.shape=} {det_alt.shape=} {det_az.shape=} {result.shape=}')
-    logger.info(f'{time_obs_unix.shape=} {len(det_alt.shape)=} {len(det_az.shape)=} {len(result.shape)=}')
+    
+    # reshape back if that is required
     if original_shape:
         result = result.reshape(original_shape)
-    assert result.shape == det_alt.shape
-    logger.info(f'{array_name=}')
-    logger.info(f'{time_obs_unix.shape=} {det_alt.shape=} {det_az.shape=} {result.shape=}')
-    logger.info(f'{time_obs_unix.shape=} {len(det_alt.shape)=} {len(det_az.shape)=} {len(result.shape)=}')
-    if original_shape:
-        pass
+
     return result
