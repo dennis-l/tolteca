@@ -11,13 +11,16 @@ from astropy.cosmology import default_cosmology
 from astropy import constants as const
 from astropy.utils.decorators import classproperty
 from scipy.interpolate import interp1d
-
+from dataclasses import dataclass, field
 import numpy as np
 
+from tollan.utils.dataclass_schema import add_schema
 from tollan.utils.log import timeit, get_logger
+from tollan.utils.fmt import pformat_yaml
 from kidsproc.kidsmodel import _Model as ComplexModel
 from contextlib import contextmanager, ExitStack
 
+from ...utils.common_schema import PhysicalTypeSchema
 from ...utils import get_pkg_data_path
 from .toltec_info import toltec_info
 from .lmt import get_lmt_atm_models
@@ -1053,7 +1056,10 @@ class ToltecPowerLoadingModel(PowerLoadingModel):
     n_inputs = 3
     n_outputs = 1
 
-    def __init__(self, atm_model_name):
+    def __init__(
+            self, atm_model_name, atm_model_params=None,
+            atm_cache_dir=None
+            ):
         if atm_model_name is None or atm_model_name == 'toast':
             # this will disable the atm component in the power loading model
             # but still create one for system efficiency calculation
@@ -1066,6 +1072,12 @@ class ToltecPowerLoadingModel(PowerLoadingModel):
                 atm_model_name=_atm_model_name)
             for array_name in self.array_names
             }
+        if atm_model_name == 'toast':
+            self._toast_atm_evaluator = ToastAtmEvaluator(
+                cache_dir=atm_cache_dir,
+                params=atm_model_params)
+        else:
+            self._toast_atm_evaluator = None
         super().__init__(name='toltec_power_loading')
         self.inputs = ('array_name', 'S', 'alt')
         self.outputs = ('P', )
@@ -1080,13 +1092,23 @@ class ToltecPowerLoadingModel(PowerLoadingModel):
         # implement the default behavior for the model
         return NotImplemented
 
-    def aplm_eval_interp_context(self, alt_grid):
+    def aplm_eval_interp_context(
+            self, t0, t_grid,
+            sky_bbox_altaz, alt_grid):
         """Context manager that pre-calculate the interp for array power
         loading model.
         """
         es = ExitStack()
         for m in self._array_power_loading_models.values():
             es.enter_context(m.eval_interp_context(alt_grid))
+        # setup the toast eval context
+        if self._toast_atm_evaluator is not None:
+            es.enter_context(self._toast_atm_evaluator.setup(
+                t0=t0,
+                t_grid=t_grid,
+                sky_bbox_altaz=sky_bbox_altaz,
+                alt_grid=alt_grid,
+                ))
         return es
 
     def get_P(self, det_array_name, det_alt, det_az, time_obs):
@@ -1096,14 +1118,18 @@ class ToltecPowerLoadingModel(PowerLoadingModel):
             mask = (det_array_name == array_name)
             aplm = self._array_power_loading_models[array_name]
             if self.atm_model_name == 'toast':
-                p = calc_toast_atm_pwr(
-                    array_name=array_name,
-                    time_obs_unix=time_obs.unix[mask], 
-                    det_alt=det_alt[mask], 
-                    det_az=det_az[mask],
-                    toast_simu=self.toast_atm_simulation
-                )
+                # p = calc_toast_atm_pwr(
+                #     array_name=array_name,
+                #     time_obs_unix=time_obs.unix[mask], 
+                #     det_alt=det_alt[mask], 
+                #     det_az=det_az[mask],
+                #     toast_simu=self.toast_atm_simulation
+                # )
 
+                p = self._toast_atm_evaluator.calc_toast_atm_pwr_for_array(
+                    array_name=array_name,
+                    det_az=det_az[mask],
+                    det_alt=det_alt[mask])
             else:
                 # use the ToltecArrayPowerLoadingModel
                 p, _ = aplm.evaluate_tod(
@@ -1133,13 +1159,17 @@ class ToltecPowerLoadingModel(PowerLoadingModel):
                 # atm is disabled
                 pass
             elif self.atm_model_name == 'toast':
-                p = calc_toast_atm_pwr(
+                # p = calc_toast_atm_pwr(
+                #     array_name=array_name,
+                #     time_obs_unix=time_obs.unix, 
+                #     det_alt=det_alt[mask], 
+                #     det_az=det_az[mask],
+                #     toast_simu=self.toast_atm_simulation
+                # )
+                p = self._toast_atm_evaluator.calc_toast_atm_pwr_for_array(
                     array_name=array_name,
-                    time_obs_unix=time_obs.unix, 
-                    det_alt=det_alt[mask], 
                     det_az=det_az[mask],
-                    toast_simu=self.toast_atm_simulation
-                )
+                    det_alt=det_alt[mask])
                 p_out[mask] += p
             else:
                 # use the ToltecArrayPowerLoadingModel atm
@@ -1244,3 +1274,125 @@ def calc_toast_atm_pwr(array_name, time_obs_unix, det_alt, det_az, toast_simu):
         result = result.reshape(original_shape)
 
     return result
+    
+@add_schema
+@dataclass
+class ToastAtmConfig(object):
+    """The config class for TOAST atm model."""
+    lmin_center: u.Quantity = field(
+        default=0.01 << u.meter,
+        metadata={
+            'description': 'The lmin_center value',
+            'schema': PhysicalTypeSchema('length')
+            }
+        )
+    lmin_sigma: u.Quantity = field(
+        default=0.001 << u.meter,
+        metadata={
+            'description': 'The lmin_sigma value',
+            'schema': PhysicalTypeSchema('length')
+            }
+        )
+    lmax_center: u.Quantity = field(
+        default=10.0 << u.meter,
+        metadata={
+            'description': 'The lmax_center value',
+            'schema': PhysicalTypeSchema('length')
+            }
+        )
+    lmax_sigma: u.Quantity = field(
+        default=10.0 << u.meter,
+        metadata={
+            'description': 'The lmax_sigma value',
+            'schema': PhysicalTypeSchema('length')
+            }
+        )
+    z0_center: u.Quantity = field(
+        default=2000.0 << u.meter,
+        metadata={
+            'description': 'The z0_center value',
+            'schema': PhysicalTypeSchema('length')
+            }
+        )
+    z0_sigma: u.Quantity = field(
+        default=0.0 << u.meter,
+        metadata={
+            'description': 'The z0_sigma value',
+            'schema': PhysicalTypeSchema('length')
+            }
+        )
+    zatm: u.Quantity = field(
+        default=40000.0 << u.meter,
+        metadata={
+            'description': 'The zatm value',
+            'schema': PhysicalTypeSchema('length')
+            }
+        )
+    zmax: u.Quantity = field(
+        default=2000.0 << u.meter,
+        metadata={
+            'description': 'The zmax value',
+            'schema': PhysicalTypeSchema('length')
+            }
+        )
+
+    class Meta:
+        schema = {
+            'ignore_extra_keys': False,
+            'description': 'The parameters related to TOAST atm model.'
+            }
+
+
+class ToastAtmEvaluator(object):
+    """A helper class to work with the Toast Atm model class."""
+
+    def __init__(self, cache_dir=None, params=None):
+        self._cache_dir = cache_dir
+        if params is None:
+            params = ToastAtmConfig()
+        self._params = params
+        self._toast_atm_simu = None
+
+    @contextmanager
+    def setup(self, t0, t_grid, sky_bbox_altaz, alt_grid):
+        """A context for TOAST atm calculation."""
+        # initialize the toast atm model
+        # create the ToastAtmosphereSimulation instance here with
+        # self._params and the sky bbox, and compute the atm slabs
+        from . import toast_atm
+
+        init_kwargs = {
+            't0': t0,
+            'tmin': t0.unix,
+            'tmax': (t0 + t_grid[-1]).unix,
+            'azmin': sky_bbox_altaz.w,
+            'azmax': sky_bbox_altaz.e,
+            'elmin': sky_bbox_altaz.s,
+            'elmax': sky_bbox_altaz.n,
+            'cachedir': self._cache_dir
+            }
+        self.logger.debug(
+            f"init toast atm simulation with:\n{pformat_yaml(init_kwargs)}"
+            )
+        toast_atm_simu = self._toast_atm_simu = \
+            toast_atm.ToastAtmosphereSimulation(**init_kwargs)
+        # here we can pass the atm params to toast for generating the slabs
+        setup_params = self._params
+
+        self.logger.debug(
+            f"setup toast atm simulation slabs with params:\n"
+            f"{pformat_yaml(setup_params)}")
+        toast_atm_simu.generate_simulation(**self._params.to_dict())
+        yield
+        # clean up the context
+        self._toast_atm_simu = None
+
+    def calc_toast_atm_pwr_for_array(self, array_name, det_az, det_alt):
+        toast_atm_simu = self._toast_atm_simu
+        if toast_atm_simu is None:
+            raise RuntimeError(
+                "The toast atm simulator is not setup.")
+        # TODO
+        # implement this to do integral for each det position
+        # at each time for a single array given by array_name
+        raise NotImplementedError("toast atm is not implemented yet")
