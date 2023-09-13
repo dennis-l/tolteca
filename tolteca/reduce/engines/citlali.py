@@ -905,6 +905,222 @@ def _fix_apt(source, output_dir):
     tbl_new.write(source_new, format='ascii.ecsv', overwrite=True)
     return source_new
 
+def _process_hwpr(source, output_dir):
+    logger = get_logger()
+    import netCDF4
+    from netCDF4 import Dataset
+    
+    def is_not_decreasing(timeseries):
+        """returns True if timeseries does not decrease"""
+        return all(i<=j for i,j in zip(timeseries, timeseries[1:]))
+    
+    def correct_overflow_wrapping(timestamps):
+        # check if there is a decrease
+        if is_not_decreasing(timestamps) is False:
+            # overflow wrapping detected        
+            # check that there is only one overflow point
+            # can change to handle multiple, but has not seen that happen
+            overflow_point = np.where((timestamps[1:] - timestamps[:-1]) < 0)[0]
+            assert(overflow_point.size == 1)
+            # correct for the overflow, by just adding the appropriate offset to everything
+            # the first value in the wrap should be equal to the min + offset. add that offset to the max value
+            # this should be more accurate than previously done
+            overflow_corrected = timestamps.copy()
+            overflow_corrected[int(overflow_point)+1:] = (overflow_corrected[int(overflow_point)+1:] - (-2**31)) + (2**31 -1)
+            overflow_corrected_normalized = overflow_corrected - np.min(overflow_corrected)
+
+            return overflow_corrected_normalized
+        else:
+            # no overflow wrapping happened
+            return timestamps
+
+    hwpr_raw_nc = nc.Dataset(source)
+
+    encoder_ts  = hwpr_nc.variables['Data.Toltec.HwprEncTs'][:].data.ravel().astype('int64')
+    encoder_val = hwpr_nc.variables['Data.Toltec.HwprEncVal'][:].data.ravel().astype('int64')
+    encoder_uts = hwpr_nc.variables['Data.Toltec.HwprEncUts'][:].data.ravel().astype('int64')
+
+    pps_ts  = hwpr_nc.variables['Data.Toltec.HwprPpsTs'][:].data.ravel().astype('int64')
+    pps_val = hwpr_nc.variables['Data.Toltec.HwprPpsVal'][:].data.ravel().astype('int64')
+    pps_uts = hwpr_nc.variables['Data.Toltec.HwprPpsUts'][:].data.ravel().astype('int64')
+
+    zeropt_ts  = hwpr_nc.variables['Data.Toltec.HwprZeroptTs'][:].data.ravel().astype('int64')
+    zeropt_val = hwpr_nc.variables['Data.Toltec.HwprZeroptVal'][:].data.ravel().astype('int64')
+    zeropt_uts = hwpr_nc.variables['Data.Toltec.HwprZeroptUts'][:].data.ravel().astype('int64')
+
+
+    # the deduplication procedure begins dd_* = deduplicated
+    # encoder data is not duplicated
+
+    # zeropoint deduplication
+    # based on the idea that each zeropoint will increment value
+    _, dedup_index = np.unique(zeropt_val, return_index=True)
+    dd_zeropt_ts  =  zeropt_ts[dedup_index]
+    dd_zeropt_val = zeropt_val[dedup_index]
+    dd_zeropt_uts = zeropt_uts[dedup_index]
+
+    # pps deduplication
+    # this will need to be modified
+    # (initially) based on the idea that each zeropoint will increment value
+    # deduplicate based on hash(ts, ut, val) if only we had sql
+    # [ ] pps entry can have the same val, but a different ts and ut
+    # [*] pps entry could be a complete duplicate
+    # [*] pps entry can be missing
+    _, dedup_index = np.unique(pps_val, return_index=True)
+    dd_pps_ts  =  pps_ts[dedup_index]
+    dd_pps_val = pps_val[dedup_index]
+    dd_pps_uts = pps_uts[dedup_index]
+
+    # limit the timerange for the data
+    min_ut = encoder_uts[0]
+    max_ut = encoder_uts[-1]
+    try:
+        assert min_ut == np.min(encoder_uts)
+        assert max_ut == np.max(encoder_uts)
+    except:
+        print('[warning] why is time not increasing with time?')
+    if np.max(dd_zeropt_uts) < min_ut:
+        raise NotImplementedError('[error] there is no rotation, so everything is zero and call it a day')
+
+    # check if there is an overflow, this occurs because 
+    # everything should be increasing monotonically or not moving
+    # resolve the overflow, assume that only happens once per obsnum
+    # -2,147,483,648 (inclusive) to 2,147,483,647 (inclusive)
+    # (-2**31) to (2**31 - 1)
+    list_of_timestreams = [
+        encoder_ts, encoder_val, encoder_uts,
+        dd_zeropt_ts, dd_zeropt_val, dd_zeropt_uts,
+        dd_pps_ts, dd_pps_val, dd_pps_uts
+    ]
+
+    encoder_ts  = correct_overflow_wrapping(encoder_ts)
+    encoder_val = correct_overflow_wrapping(encoder_val)
+    encoder_uts = correct_overflow_wrapping(encoder_uts)
+
+    dd_zeropt_ts = correct_overflow_wrapping(dd_zeropt_ts)
+    dd_zeropt_val = correct_overflow_wrapping(dd_zeropt_val)
+    dd_zeropt_uts = correct_overflow_wrapping(dd_zeropt_uts)
+
+    dd_pps_ts = correct_overflow_wrapping(dd_pps_ts)
+    dd_pps_val = correct_overflow_wrapping(dd_pps_val)
+    dd_pps_uts = correct_overflow_wrapping(dd_pps_uts)
+             
+    # interpolate the values for the encoder
+    resamp_encoder_ts  = np.arange(encoder_ts[0], encoder_ts[-1] + samplefreq, samplefreq)
+    resamp_encoder_val = np.interp(resamp_encoder_ts, encoder_ts, encoder_val)
+    resamp_encoder_uts = np.interp(resamp_encoder_ts, encoder_ts, encoder_uts)
+    encoder_ts  = resamp_encoder_ts.copy()
+    encoder_val = resamp_encoder_val.copy()
+    encoder_uts = resamp_encoder_uts.copy()
+
+
+    # using the zeropoint data, align to the beginning of 
+    # when it first crosses the zeropoint
+    # **where the crossing happens after we started collecting encoder data
+    start_index = np.where(dd_zeropt_ts > encoder_ts[0])[0][0]
+
+    dd_zeropt_ts  = dd_zeropt_ts[start_index:]
+    dd_zeropt_val = dd_zeropt_val[start_index:]
+    dd_zeropt_uts = dd_zeropt_uts[start_index:]
+
+    # get the quadrature encoder value at the zeropoint 
+    interpolated_zeropt_val = np.interp(dd_zeropt_ts, encoder_ts, encoder_val)
+
+    # create arrays that are identical for both data sets...
+    zeropt_arr = np.array(
+        [
+            dd_zeropt_ts,                          # timestamp
+            interpolated_zeropt_val,               # encoder value (interpolated)
+            np.zeros_like(dd_zeropt_val),          # 0=zero crossing data point -1=encoder value
+            dd_zeropt_uts, # uts
+            np.zeros_like(dd_zeropt_val),          # will be used (encoder value (referenced from the zeropoint))
+        ],
+        dtype=np.int64,
+    )
+    encoder_arr = np.array(
+        [
+            encoder_ts,                            # timestamp
+            encoder_val,                           # encoder value
+            -1 + np.zeros_like(encoder_val),       # 0=zero crossing data point -1=encoder value
+            encoder_uts,   # uts
+            np.zeros_like(encoder_val),            # will be used (encoder value (referenced from the zeropoint))
+        ],
+        dtype=np.int64,
+    )
+    # ...and combine them.
+    merged_arr = np.hstack((zeropt_arr, encoder_arr)).T
+
+    # sort the merge on the timestamp value
+    s_idx = np.argsort(merged_arr.T[0])
+    sorted_merged_arr = merged_arr[s_idx] 
+
+    # get the index of the zeropoint in the merged array (0=zero crossing data point)
+    index_of_zeropt = np.where(sorted_merged_arr.T[2] == 0)[0]
+
+    # between the indexes of the zero point is one full rotation
+    ranges = np.array([index_of_zeropt[:-1], index_of_zeropt[1:]]).T
+
+    # loop through ranges
+    for r in ranges:
+        # start and end of that full rotation
+        zeropt, end = r
+
+        # a 
+        a = sorted_merged_arr[zeropt:end - 1].T[1]  # encoder values
+        b = sorted_merged_arr.T[1][zeropt]          # encoder value at zero point
+        sorted_merged_arr[zeropt:end - 1].T[4] = a - b # update that last column
+
+    # limit range to the first rotation start and only use the rotation values
+    sorted_merged_arr = sorted_merged_arr[ranges[0][0]:].copy()
+    encoder_values_idx = np.where(sorted_merged_arr.T[2] == -1)
+
+    encoder_timestamp_abs    = sorted_merged_arr.T[0][encoder_values_idx].copy()
+    encoder_value_abs        = sorted_merged_arr.T[4][encoder_values_idx].copy()
+    encoder_uts_abs          = sorted_merged_arr.T[3][encoder_values_idx].copy()
+
+    encoder_angle = encoder_value_abs * ((2 * np.pi) / 307200)
+
+    # output file
+    processed_file_name = output_dir.joinpath(Path(source).name.replace('.nc', '_processed.nc')).as_posix()
+
+    # duplicate the whole nc file, but add the processed data too
+    with nc.Dataset(hwpr_raw_filepath) as src, nc.Dataset(processed_file_name, "w") as dst:
+        # copy global attributes all at once via dictionary
+        dst.setncatts(src.__dict__)
+
+        # copy dimensions
+        for name, dimension in src.dimensions.items():
+            dst.createDimension(
+                name, (len(dimension) if not dimension.isunlimited() else None))
+
+        # copy all file data (don't exclude anything)
+        for name, variable in src.variables.items():
+            x = dst.createVariable(name, variable.datatype, variable.dimensions)
+            dst[name][:] = src[name][:]
+            # copy variable attributes all at once via dictionary
+            dst[name].setncatts(src[name].__dict__)
+
+        # put sample freq in 
+        sf_var = dst.createVariable('Header.Hwp.SampleFreq', np.int64)
+        dst['Header.Hwp.SampleFreq'][:] = [samplefreq]
+
+        # put sample freq in 
+        rot_var = dst.createVariable('Header.Hwp.RotatorEnabled', np.int64)
+        dst['Header.Hwp.RotatorEnabled'][:] = [1]
+
+
+        # create the dimension
+        dst.createDimension('processed_length', encoder_angle.size)
+
+        # put the data in 
+        encoder_val_var = dst.createVariable('Data.Hwp.', type(encoder_angle[0]), dimensions=('processed_length'))
+        dst['Data.Hwp.'][:] = encoder_angle
+
+        encoder_val_var = dst.createVariable('Data.Hwp.Ts', type(encoder_timestamp_abs[0]), dimensions=('processed_length'))
+        dst['Data.Hwp.Ts'][:] = encoder_timestamp_abs
+
+        encoder_val_var = dst.createVariable('Data.Hwp.Uts', type(encoder_uts_abs[0]), dimensions=('processed_length'))
+        dst['Data.Hwp.Uts'][:] = encoder_uts_abs
 
 def _make_apt(data_items, output_dir):
 
